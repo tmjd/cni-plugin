@@ -1,17 +1,21 @@
 package main_test
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 	"github.com/projectcalico/cni-plugin/testutils"
 	client "github.com/projectcalico/libcalico-go/lib/clientv3"
+	"github.com/projectcalico/libcalico-go/lib/options"
 )
 
 var plugin = "calico-ipam"
+var defaultIPv4Pool = "192.168.0.0/16"
 
 var _ = Describe("Calico IPAM Tests", func() {
 	cniVersion := os.Getenv("CNI_SPEC_VERSION")
@@ -19,7 +23,7 @@ var _ = Describe("Calico IPAM Tests", func() {
 
 	BeforeEach(func() {
 		testutils.WipeEtcd()
-		testutils.MustCreateNewIPPool(calicoClient, "192.168.0.0/16", false, false, true)
+		testutils.MustCreateNewIPPool(calicoClient, defaultIPv4Pool, false, false, true)
 		testutils.MustCreateNewIPPool(calicoClient, "fd80:24e2:f998:72d6::/64", false, false, true)
 	})
 
@@ -144,6 +148,44 @@ var _ = Describe("Calico IPAM Tests", func() {
                 }`, cniVersion, os.Getenv("ETCD_IP"), os.Getenv("DATASTORE_TYPE"), plugin)
 				result, _, _ := testutils.RunIPAMPlugin(netconf, "ADD", "", cniVersion)
 				Expect(result.IPs[0].Address.IP.String()).Should(Or(HavePrefix("192.168."), HavePrefix("192.169.1")))
+			})
+		})
+
+		Context("Disabled IP pool", func() {
+			It("Never allocates from the disabled pool", func() {
+				netconf := fmt.Sprintf(`
+                {
+                      "cniVersion": "%s",
+                      "name": "net1",
+                      "type": "calico",
+                      "etcd_endpoints": "http://%s:2379",
+			          "datastore_type": "%s",
+                      "ipam": {
+                        "type": "%s",
+                        "assign_ipv4": "true"
+                      }
+                }`, cniVersion, os.Getenv("ETCD_IP"), os.Getenv("DATASTORE_TYPE"), plugin)
+
+				// Get an allocation
+				result, _, _ := testutils.RunIPAMPlugin(netconf, "ADD", "", cniVersion)
+				Expect(result.IPs[0].Address.IP.String()).Should(HavePrefix("192.168."))
+
+				// Disable the currently enabled pool
+				name := strings.Replace(defaultIPv4Pool, ".", "-", -1)
+				name = strings.Replace(name, ":", "-", -1)
+				name = strings.Replace(name, "/", "-", -1)
+				pool, err := calicoClient.IPPools().Get(context.Background(), name, options.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				pool.Spec.Disabled = true
+				_, err = calicoClient.IPPools().Update(context.Background(), pool, options.SetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+
+				// Create new (enabled) pool
+				testutils.MustCreateNewIPPool(calicoClient, "192.169.1.0/24", false, false, true)
+
+				// Get an allocation then check that it is not from the disabled pool
+				result, _, _ = testutils.RunIPAMPlugin(netconf, "ADD", "", cniVersion)
+				Expect(result.IPs[0].Address.IP.String()).Should(HavePrefix("192.169.1"))
 			})
 		})
 
