@@ -111,6 +111,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		logger.WithField("annotations", annot).Debug("Fetched K8s annotations")
 		logger.WithField("ports", ports).Debug("Fetched K8s ports")
 		logger.WithField("profiles", profiles).Debug("Generated profiles")
+		labels = append(labels, annot...)
 
 		// Check for calico IPAM specific annotations and set them if needed.
 		if conf.IPAM.Type == "calico-ipam" {
